@@ -36,6 +36,8 @@ def build_optimizer(parameters: Iterable[torch.nn.Parameter], training_cfg: Dict
         betas=betas,
         weight_decay=weight_decay,
         eps=eps,
+        fused=True,
+        #foreach=True,
     )
 
     training_cfg.setdefault("base_lr", base_lr)
@@ -61,6 +63,7 @@ def build_scheduler(
     final_ratio = final_lr / base_lr if base_lr > 0 else 1.0
 
     warmup_steps_cfg = sched_cfg.get("warmup_steps")
+    warmup_from_zero = bool(sched_cfg.get("warmup_from_zero", False))
     if warmup_steps_cfg is not None:
         warmup_steps = int(warmup_steps_cfg)
     else:
@@ -85,7 +88,10 @@ def build_scheduler(
 
         def lr_lambda(step: int) -> float:
             if step < warmup_steps:
-                return (step + 1) / warmup_steps
+                if warmup_from_zero:
+                    return (step + 1) / warmup_steps
+                else:
+                    return 1.0 # constant lr during warmup
             if step >= decay_end_steps:
                 return final_ratio
             progress = (step - warmup_steps) / total_decay_steps
@@ -95,7 +101,10 @@ def build_scheduler(
 
         def lr_lambda(step: int) -> float:
             if step < warmup_steps:
-                return (step + 1) / warmup_steps
+                if warmup_from_zero:
+                    return (step + 1) / warmup_steps
+                else:
+                    return 1.0 # constant lr during warmup
             if step >= decay_end_steps:
                 return final_ratio
             progress = (step - warmup_steps) / total_decay_steps
@@ -107,6 +116,5 @@ def build_scheduler(
     if state_dict is not None:
         scheduler.load_state_dict(state_dict)
     # return some debug msg for optimizer/scheduler
-    sched_msg = f"Scheduler: {schedule_type} with warmup_steps={warmup_steps}, decay_end_steps={decay_end_steps}, final_lr={final_lr}"
+    sched_msg = f"Scheduler: {schedule_type} with warmup_steps={warmup_steps}, decay_end_steps={decay_end_steps}, final_lr={final_lr}, base_lr={base_lr}, warmup_from_zero={warmup_from_zero}"
     return scheduler, sched_msg
-

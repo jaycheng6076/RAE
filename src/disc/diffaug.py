@@ -103,4 +103,3 @@ class DiffAug(object):
             BCHW = BCHW.mul(mask.unsqueeze(1))
         
         return BCHW
-

@@ -30,7 +30,6 @@ stage_2:
     use_pos_embed: True
   ckpt: 'models/DiTs/Dinov2/wReg_base/ImageNet256/DiTDH-XL/stage2_model.pt'
 
-
 transport:
   params:
     path_type: 'Linear'

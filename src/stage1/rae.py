@@ -74,7 +74,7 @@ class RAE(nn.Module):
         noise_sigma = self.noise_tau * torch.rand((x.size(0),) + (1,) * (len(x.shape) - 1), device=x.device)
         noise = noise_sigma * torch.randn_like(x)
         return x + noise
-
+    @torch.no_grad()
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         # normalize input
         _, _, h, w = x.shape

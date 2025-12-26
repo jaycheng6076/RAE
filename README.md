@@ -23,6 +23,16 @@ TorchXLA/TPU:
 * A TPU implementation of RAE and pretrained weights.
 * Sampling of RAE and DiT<sup>DH</sup> on TPU.
 
+### Update (Dec. 2025)
+
+We **refactored the codebase** and added support for statistic calculation, training
+resumption, Weights & Biases logging, online evaluation, and sanity checks (see the end of the page).
+This is a **major update** over the Oct. 2025 release, and some APIs have changed.
+Please refer to the [deprecated branch](https://github.com/bytetriper/RAE/tree/deprecated-gpu) for the old codebase.
+
+
+>Note: You might need to update environment and script accordingly.
+
 ## Environment
 
 ### Dependency Setup
@@ -32,12 +42,11 @@ TorchXLA/TPU:
    conda activate rae
    pip install uv
    
-   # Install PyTorch 2.2.0 with CUDA 12.1
-   uv pip install torch==2.2.0 torchvision==0.17.0 torchaudio --index-url https://download.pytorch.org/whl/cu121
+   # Install PyTorch 2.8.0 with CUDA 12.9 # or your own cuda version
+   uv pip install torch==2.8.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu129 
    
    # Install other dependencies
-   uv pip install timm==0.9.16 accelerate==0.23.0 torchdiffeq==0.2.5 wandb
-   uv pip install "numpy<2" transformers einops omegaconf
+   uv pip install -r requirements.txt
    ```
 
 ## Data & Model Preparation
@@ -105,6 +114,8 @@ misc:
    num_classes: 1000
 training:
    ...
+eval:
+   ...
 ```
 
 - `stage_1` instantiates the frozen encoder and trainable decoder. For Stage 1
@@ -118,6 +129,7 @@ training:
   stages.
 - `training` contains defaults that the training scripts consume (epochs,
   learning rate, EMA decay, gradient accumulation, etc.).
+- `eval` contains settings for online evaluation during training.
 
 Stage 1 training configs additionally include a top-level `gan` block that
 configures the discriminator architecture and the LPIPS/GAN loss schedule.
@@ -131,6 +143,10 @@ We release decoders for DINOv2-B, SigLIP-B, MAE-B, at `configs/stage1/pretrained
 
 There is also a training script for training a ViT-XL decoder on DINOv2-B: `configs/stage1/training/DINOv2-B_decXL.yaml`
 
+> **Note**: In the released training configs, optimization hyperparameters are tuned
+to adapt to GPU hardware. The updated configs yield slightly better gFID than the
+reported numbers.
+
 #### Stage2
 
 We release our best model, DiT<sup>DH</sup>-XL and it's guidance model on both $256\times 256$ and $512\times 512$, at `configs/stage2/sampling/`.
@@ -141,7 +157,7 @@ We also provide training configs for DiT<sup>DH</sup> at `configs/stage2/trainin
 
 ### Train the decoder
 
-`src/train_stage1.py` fine-tunes the ViT decoder while keeping the
+`src/train_stage1.py` trains the ViT decoder while keeping the
 representation encoder frozen. Launch it with PyTorch DDP (single or multi-GPU):
 
 ```bash
@@ -149,12 +165,13 @@ torchrun --standalone --nproc_per_node=N \
   src/train_stage1.py \
   --config <config> \
   --data-path <imagenet_train_split> \
-  --results-dir results/stage1 \
-  --image-size 256 --precision bf16/fp32 \
-  --ckpt <optional_ckpt> \
+  --results-dir ckpts/stage1 \
+  --image-size 256 --precision bf16/fp32 
 ```
 
-where `N` refers to the number of GPU cards available, and `--ckpt` resumes from an existing checkpoint. 
+where `N` refers to the number of GPU cards available.
+
+You need to specify the checkpointing folder by `export EXPERIMENT_NAME="your_experiment_name"` before launching the script. The checkpoints and logs will be saved under `results-dir/$EXPERIMENT_NAME/`. 
 
 **Logging.** To enable `wandb`, firstly set `WANDB_KEY`, `ENTITY`, and `PROJECT` as environment variables:
 
@@ -166,6 +183,21 @@ export PROJECT="project name"
 
 Then in training command add the `--wandb` flag
 
+
+**Resuming.** If the checkpoint folder already exists (`results-dir/$EXPERIMENT_NAME/`), the script will automatically resume from the latest checkpoint.
+
+**Online Eval.** The script supports online evaluation during training to monitor reconstruction quality. Paste the following block into the training config:
+
+```yaml
+eval:
+  eval_interval: 2500 # Eval interval by optimization step
+  eval_model: true # By default only evaluates EMA model. Set to true to eval non-EMA model as well.
+  data_path: 'data/imagenet/val/' # path to ImageNet val images
+  reference_npz_path: 'data/imagenet/val_256.npz' # packed npz of ImageNet val images for FID calculation
+  metrics: ['psnr', 'ssim', 'rfid'] # metrics to calculate
+```
+
+**torch.compile.** Use `--compile` flag to enable `torch.compile` for potentially faster training. 
 ### Sampling/Reconstruction
 
 Use `src/stage1_sample.py` to encode/decode a single image:
@@ -189,6 +221,33 @@ torchrun --standalone --nproc_per_node=N \
 
 The script writes per-image PNGs as well as a packed `.npz` suitable for FID.
 
+
+We also provide an individual script `pack_images.py` to convert a folder of images into a FID-ready `.npz`:
+
+```bash
+python src/pack_images.py <image_folder> 
+```
+
+### Calculating Encoder Statistics
+
+We use a batchnorm-like normalization layer in the latent space for calculating the mean and variance statistics of the encoder outputs. Specifically, we calculate the mean and variance of the same shape as the latent `[C, H, W]`. To run:
+
+```bash
+torchrun --standalone --nproc_per_node=N \
+  src/calculate_stat.py \
+  --config <config> \ # w/o pre-computed stats
+  --sample-dir stats \
+  --precision fp32/bf16 \
+  --data-path <imagenet_train_split> \
+  --image-size 256 \
+  --tf32
+```
+
+We note that the results may differ slightly from the released statistics because we use a momentum-based update rule for the mean and variance. As a result, the outcome is not deterministic and depends on batch size and data shuffling.
+
+As a reproduction, we ran the script to calculate the statistic of DINOv2-B on 4 GPUs with a batch size of 256 under fp32. The config is exactly the same as `configs/stage1/pretrained/DINOv2-B.yaml` except commenting out the pre-computed stats. The computed variance give around `0.008` L1 difference compared to the released statistics.
+
+
 ## Stage 2: Latent Diffusion Transformer
 
 ### Training
@@ -201,10 +260,23 @@ torchrun --standalone --nnodes=1 --nproc_per_node=N \
   src/train.py \
   --config <training_config> \
   --data-path <imagenet_train_split> \
-  --results-dir results/stage2 \
-  --precision bf16
+  --results-dir ckpts/stage2 \
+  --precision fp32
 ```
 
+Although `bf16` is supported, we recommend using **fp32** for more stable training.
+
+The logging and checkpointing behaviour is the same as Stage 1 training.
+
+**Online Eval**: Paste the following block into training config to support online eval:
+
+```yaml
+eval:
+  eval_interval: 25000 
+  eval_model: true
+  data_path: 'data/imagenet/val/'
+  reference_npz_path: 'data/imagenet/VIRTUAL_imagenet256_labeled.npz'
+```
 
 ### Sampling
 
@@ -217,7 +289,6 @@ python src/sample.py \
   --seed 42
 ```
 
-
 ### Distributed sampling for evaluation
 
 `src/sample_ddp.py` parallelises sampling across GPUs, producing PNGs and an
@@ -228,13 +299,13 @@ torchrun --standalone --nnodes=1 --nproc_per_node=N \
   src/sample_ddp.py \
   --config <sample_config> \
   --sample-dir samples \
-  --precision bf16 \
+  --precision fp32/bf16 \
   --label-sampling equal
 ```
-`--label-sampling {equal,random}`: `equal` uses exactly 50 images per class for FID-50k; `random` uniformly samples labels. Using `equal` brings consistently lower FID than `random` by around 0.1. We use `equal` by default.
+`--label-sampling {equal,random}`: `equal` uses exactly 50 images per class for FID-50k; `random` uniformly samples labels. Using `equal` brings consistently lower FID than `random` by around 0.1. We use `equal` by default. We recommend using fp32 when model FID is low.
 
-Autoguidance and classifier-free guidance are controlled via the config’s
-`guidance` block.
+Autoguidance and classifier-free guidance are controlled via the config’s `guidance` block.
+
 
 ## Evaluation
 
@@ -273,6 +344,19 @@ Use the ADM evaluation suite to score generated samples:
 
 See `XLA` branch for TPU support.
 
+
+## GPU training reproduction results:
+
+---
+| Model                | rFID-50k (reported) | rFID-50k (reproduced) |
+|----------------------|--------------------|--------------------|
+| DINOv2-B  ($\tau$ = 0.8)| 0.57 | 0.54 |
+
+
+| Model  (80 epochs)             | gFID-50k (reported) | gFID-50k (reproduced) |
+|---------------------|--------------------|--------------------|
+| DiT<sup>DH</sup>-XL (DINOv2-B) |  2.16 | 2.16|
+---
 
 
 ## Acknowledgement

@@ -16,12 +16,12 @@ stage_1:
 training:
   epochs: 16
   ema_decay: 0.9978
-  batch_size: 32 # per-proc bs
+  global_batch_size: 512
   num_workers: 8
   clip_grad: 0.0
   log_interval: 100
-  checkpoint_interval: 5000
-  sample_interval: 0
+  checkpoint_interval: 1 # every 1 epoch
+  sample_every: 2500
   optimizer:
     lr: 2.0e-4
     betas: [0.9, 0.95]
@@ -32,6 +32,14 @@ training:
     decay_end_epoch: 16
     base_lr: 2.0e-4
     final_lr: 2.0e-5
+    warmup_from_zero: true
+
+# eval:
+#   eval_interval: 2500
+#   eval_model: true
+#   data_path: 'data/imagenet/val/'
+#   reference_npz_path: 'data/imagenet/val_256.npz'
+#   metrics: ['psnr', 'ssim', 'rfid']
 
 gan:
   disc:
@@ -51,6 +59,7 @@ gan:
       decay_end_epoch: 16
       base_lr: 2.0e-4
       final_lr: 2.0e-5
+      warmup_from_zero: true
     augment:
       prob: 1.0
       cutout: 0.0
@@ -64,3 +73,4 @@ gan:
     lpips_start: 0
     max_d_weight: 10000.0
     disc_updates: 1
+    

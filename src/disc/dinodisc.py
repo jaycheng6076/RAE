@@ -8,7 +8,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.spectral_norm import SpectralNorm
-
 from .utils import RandomWindowCrop
 
 dropout_add_layer_norm = fused_mlp_func = None
@@ -260,12 +259,14 @@ class DinoDisc(nn.Module):
         if grad_ckpt and x_in_pm1.requires_grad:
             raise RuntimeError("DINO discriminator does not support grad checkpointing.")
         activations: List[torch.Tensor] = self.dino_proxy[0](x_in_pm1, grad_ckpt=False)
+        # print('activation shape: ', [a.shape for a in activations])
         batch = x_in_pm1.shape[0]
         outputs = []
         for head, act in zip(self.heads, activations):
             out = head(act).view(batch, -1)
             outputs.append(out)
         return torch.cat(outputs, dim=1)
+
 
 class PatchEmbed(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=768, norm_layer=None):

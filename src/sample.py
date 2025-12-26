@@ -28,7 +28,7 @@ def main(args):
     torch.set_grad_enabled(False)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    rae_config, model_config, transport_config, sampler_config, guidance_config, misc, _ = parse_configs(args.config)
+    rae_config, model_config, transport_config, sampler_config, guidance_config, misc, _, _ = parse_configs(args.config)
     rae: RAE = instantiate_from_config(rae_config).to(device)
     model: Stage2ModelProtocol = instantiate_from_config(model_config).to(device)
     model.eval()  # important!

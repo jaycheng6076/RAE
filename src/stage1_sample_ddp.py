@@ -127,11 +127,15 @@ def main(args):
         args.precision,
     ]
     sample_folder_dir = os.path.join(args.sample_dir, "-".join(folder_components))
+    possible_folder_name = os.environ.get('SAVE_FOLDER', None)
+    if possible_folder_name:
+        sample_folder_dir = os.path.join(args.sample_dir, possible_folder_name)
+    else:
+        sample_folder_dir = os.path.join(args.sample_dir, folder_name)
     if rank == 0:
         os.makedirs(sample_folder_dir, exist_ok=True)
         print(f"Saving reconstructed samples at {sample_folder_dir}")
     dist.barrier()
-
     loader = DataLoader(
         subset,
         batch_size=args.per_proc_batch_size,

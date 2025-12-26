@@ -22,7 +22,7 @@ from PIL import Image
 from torch.cuda.amp import autocast
 from tqdm import tqdm
 from pathlib import Path
-
+from omegaconf import OmegaConf
 from utils.model_utils import instantiate_from_config
 from stage1 import RAE
 from stage2.models import Stage2ModelProtocol
@@ -58,7 +58,6 @@ def build_label_sampler(
     rank: int,
     iterations: int,
     seed: int,
-    label_counts_path: Optional[str],
 ) -> Callable[[int], torch.Tensor]:
     """Create a callable that returns a batch of labels for the given step index."""
 
@@ -126,8 +125,8 @@ def main(args):
     if use_bf16 and not torch.cuda.is_bf16_supported():
         raise ValueError("Requested bf16 precision, but the current CUDA device does not support bfloat16.")
     autocast_kwargs = dict(dtype=torch.bfloat16, enabled=use_bf16)
-
-    rae_config, model_config, transport_config, sampler_config, guidance_config, misc, _ = parse_configs(args.config)
+    cfg = OmegaConf.load(args.config)
+    rae_config, model_config, transport_config, sampler_config, guidance_config, misc, _, _ = parse_configs(cfg)
     if rae_config is None or model_config is None:
         raise ValueError("Config must provide both stage_1 and stage_2 entries.")
     misc = {} if misc is None else dict(misc)
@@ -205,7 +204,11 @@ def main(args):
         last_step_size = sampler_params.get("last_step_size", "na")
         detail_components = [mode, str(num_steps), str(sampling_method), str(diffusion_form), str(last_step), str(last_step_size), args.precision]
     folder_name = "-".join(component.replace(os.sep, "-") for component in base_components + detail_components)
-    sample_folder_dir = os.path.join(args.sample_dir, folder_name)
+    possible_folder_name = os.environ.get('SAVE_FOLDER', None)
+    if possible_folder_name:
+        sample_folder_dir = os.path.join(args.sample_dir, possible_folder_name)
+    else:
+        sample_folder_dir = os.path.join(args.sample_dir, folder_name)
     if rank == 0:
         os.makedirs(sample_folder_dir, exist_ok=True)
         print(f"Saving .png samples at {sample_folder_dir}")
@@ -292,7 +295,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True, help="Path to the config file.")
     parser.add_argument("--sample-dir", type=str, default="samples")
-    parser.add_argument("--per-proc-batch-size", type=int, default=4)
+    parser.add_argument("--per-proc-batch-size", type=int, default=125)
     parser.add_argument("--num-fid-samples", type=int, default=50_000)
     parser.add_argument("--global-seed", type=int, default=0)
     parser.add_argument("--precision", type=str, choices=["fp32", "bf16"], default="fp32")

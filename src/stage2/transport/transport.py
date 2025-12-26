@@ -163,6 +163,7 @@ class Transport:
         t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
         if dist_options[0] == "uniform":
             t = th.rand((x1.shape[0],)) * (t1 - t0) + t0
+            # print('UNIFORM IS CALLED')
         elif dist_options[0] == "logit-normal":
             assert len(dist_options) == 3, "Logit-normal distribution must specify the mean and variance."
             mu, sigma = float(dist_options[1]), float(dist_options[2])
@@ -170,6 +171,7 @@ class Transport:
             t = truncated_logitnormal_sample(
                 (x1.shape[0],), mu=mu, sigma=sigma, low=t0, high=t1
             )
+            # print('LOGITNORMAL IS CALLED')
         else:
             raise NotImplementedError(f"Unknown time distribution type {self.time_dist_type}")
 

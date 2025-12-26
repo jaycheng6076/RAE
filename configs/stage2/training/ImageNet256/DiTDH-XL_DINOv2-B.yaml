@@ -37,7 +37,7 @@ transport:
     path_type: 'Linear'
     prediction: 'velocity'
     loss_weight: null
-    time_dist_type: 'uniform'
+    time_dist_type: 'logit-normal_0_1'
 
 sampler:
   mode: ODE
@@ -59,22 +59,33 @@ misc:
   num_classes: 1000
   time_dist_shift_dim: 196608 # 16*16*768
   time_dist_shift_base: 4096
+  
+eval:
+  eval_interval: 25000 # every 10 epochs
+  eval_model: true
+  data_path: 'data/imagenet/val/'
+  reference_npz_path: 'data/imagenet/VIRTUAL_imagenet256_labeled.npz'
+
 
 training:
-  global_seed: 0
   epochs: 1400
   global_batch_size: 1024
   grad_accum_steps: 1 # change according to your GPU memory
   ema_decay: 0.9995
-  num_workers: 4
-  log_every: 100
-  ckpt_every: 5000
+  num_workers: 16
+  log_interval: 100
+  checkpoint_interval: 10
   sample_every: 10000
-  base_lr: 0.0002
-  final_lr: 0.00002
-  beta: [0.9, 0.95]
-  wd: 0.0
-  schedule_type: 'linear'
-  decay_start_epoch: 40
-  decay_end_epoch: 800
   clip_grad: 1.0
+  global_seed: 42
+  optimizer:
+    lr: 2.0e-4
+    betas: [0.9, 0.95]
+    weight_decay: 0.0
+  scheduler:
+    type: linear
+    warmup_epochs: 40
+    decay_end_epoch: 800
+    base_lr: 2.0e-4
+    final_lr: 2.0e-5
+    warmup_from_zero: false
