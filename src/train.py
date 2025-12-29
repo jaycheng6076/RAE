@@ -217,17 +217,17 @@ def main():
     rae: RAE = instantiate_from_config(rae_config).to(device)
     rae.eval()
     model: Stage2ModelProtocol = instantiate_from_config(model_config).to(device) 
-    if args.compile:
-        try:
-            rae.encode = torch.compile(rae.encode)
-        except:
-            print('RAE ENCODE compile meets error, falling back to no compile')
-        try:
-            model.forward = torch.compile(model.forward)
-        except:
-            print('MODEL FORWARD compile meets error, falling back to no compile')
-    else:
-        raise NotImplementedError('ARGS>COMPILE')
+    # if args.compile:
+    #     try:
+    #         rae.encode = torch.compile(rae.encode)
+    #     except:
+    #         print('RAE ENCODE compile meets error, falling back to no compile')
+    #     try:
+    #         model.forward = torch.compile(model.forward)
+    #     except:
+    #         print('MODEL FORWARD compile meets error, falling back to no compile')
+    # else:
+    #     raise NotImplementedError('ARGS>COMPILE')
     ema_model = deepcopy(model).to(device)
     ema_model.requires_grad_(False)
     ema_model.eval()
