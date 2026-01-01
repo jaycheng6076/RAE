@@ -63,8 +63,8 @@ misc:
 eval:
   eval_interval: 25000 # every 10 epochs
   eval_model: true
-  data_path: 'data/imagenet/val/'
-  reference_npz_path: 'data/imagenet/VIRTUAL_imagenet256_labeled.npz'
+  data_path: '/home/jianpengcheng_meta_com/imagenet/val/'
+  reference_npz_path: '/home/jianpengcheng_meta_com/imagenet/VIRTUAL_imagenet256_labeled.npz'
 
 
 training:

@@ -11,7 +11,14 @@ stage_1:
     noise_tau: 0.8 # training 0.8, at inference time always set to 0
     reshape_to_2d: true
     #normalization_stat_path: 'models/stats/dinov2/wReg_base/imagenet1k/stat.pt'
+  #ckpt: results/stage1/rae/checkpoints/ep-last.pt
 
+eval:
+  eval_interval: 2500 # Eval interval by optimization step
+  eval_model: true # By default only evaluates EMA model. Set to true to eval non-EMA model as well.
+  data_path: '/home/jianpengcheng_meta_com/imagenet/val/' # path to ImageNet val images
+  reference_npz_path: '/home/jianpengcheng_meta_com/imagenet/VIRTUAL_imagenet256_labeled.npz' # packed npz of ImageNet val images for FID calculation
+  metrics: ['psnr', 'ssim', 'rfid'] # metrics to calculate
 
 training:
   epochs: 16
