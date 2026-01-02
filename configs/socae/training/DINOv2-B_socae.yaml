@@ -1,0 +1,68 @@
+# SOCAE (Sparse Orthogonal Contrastive AutoEncoder) training config
+# This config trains the SOCAE bottleneck on frozen DINOv2-Base encoder outputs
+
+# Encoder configuration (frozen, used only for extracting latents)
+encoder:
+  target: stage1.RAE
+  params:
+    encoder_cls: 'Dinov2withNorm'
+    encoder_config_path: 'facebook/dinov2-with-registers-base'
+    encoder_input_size: 224
+    encoder_params:
+      dinov2_path: 'facebook/dinov2-with-registers-base'
+      normalize: true
+    decoder_config_path: 'configs/decoder/ViTXL'
+    noise_tau: 0.0  # No noise during SOCAE training
+    reshape_to_2d: true
+
+# SOCAE bottleneck configuration
+socae:
+  target: stage1.bottleneck.socae.SparseOrthogonalContrastiveAutoEncoder
+  params:
+    input_dim: 768  # DINOv2-Base hidden size
+    hidden_dim: 12288  # 16x expansion for sparse latent (768 * 16)
+    topk: 32  # Number of top activations to keep (sparsity level)
+    larger_topk: 128  # Less sparse representation for better reconstruction
+    dead_topk: null  # Auto-calculate based on input_dim
+    dead_threshold: 64  # Batches without activation to consider neuron dead
+    ncl_with_larger_k: false  # Use z_k for NCL loss (not z_large_k)
+    track_dead_neuron_pre_relu: true
+    activation_history_size: 1000
+    encoder_bias: false
+    z_dead_k_in_positives_for_ncl: false
+
+# Loss configuration
+loss:
+  recon_k_weight: 1.0  # Main reconstruction loss weight
+  recon_large_k_weight: 0.1  # Less sparse reconstruction loss weight
+  recon_dead_k_weight: 0.1  # Dead neuron recovery loss weight
+  ncl_weight: 0.01  # Contrastive loss weight
+  orth_weight: 0.01  # Orthogonality regularization weight
+  ncl_temperature: 0.2  # Temperature for contrastive loss
+  ncl_sim_threshold: 0.8  # Similarity threshold for NCL
+  enable_orth_reg: true  # Enable orthogonality regularization
+
+# Training configuration
+training:
+  epochs: 50
+  ema_decay: 0.9999
+  global_batch_size: 2048  # Large batch for contrastive learning
+  num_workers: 8
+  clip_grad: 1.0
+  log_interval: 100
+  checkpoint_interval: 5  # Every 5 epochs
+  global_seed: 42
+  simulated_annealing: true  # Enable simulated annealing for topk
+  init_from_data: true  # Initialize bias from data
+  init_samples: 100000  # Number of samples for initialization
+  optimizer:
+    lr: 1.0e-3
+    betas: [0.9, 0.999]
+    weight_decay: 0.0
+  scheduler:
+    type: cosine
+    warmup_epochs: 2
+    decay_end_epoch: 50
+    base_lr: 1.0e-3
+    final_lr: 1.0e-5
+    warmup_from_zero: true
