@@ -38,9 +38,16 @@ def _instantiate_quantizer(
         return None
     if isinstance(config, nn.Module):
         return config
-    if isinstance(config, dict) and "target" in config:
+
+    # Handle both regular dict and OmegaConf DictConfig
+    # Check if it has dict-like behavior with 'target' key
+    if hasattr(config, "get") and "target" in config:
         quantizer_cls = _get_obj_from_str(config["target"])
-        quantizer = quantizer_cls(**config.get("params", {}))
+        # Convert params to regular dict if it's a DictConfig
+        params = config.get("params", {})
+        if hasattr(params, "items"):
+            params = dict(params)
+        quantizer = quantizer_cls(**params)
 
         # Load checkpoint if provided
         ckpt_path = config.get("ckpt", None)
@@ -57,7 +64,7 @@ def _instantiate_quantizer(
 
         return quantizer
     raise ValueError(
-        f"Invalid quantizer config: expected dict with 'target' key or nn.Module, got {type(config)}"
+        f"Invalid quantizer config: expected dict-like object with 'target' key or nn.Module, got {type(config)}"
     )
 
 
