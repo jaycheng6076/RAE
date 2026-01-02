@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=ra_training
+#SBATCH --job-name=ra_training_socae
 #SBATCH --partition=a4
 #SBATCH --nodes=8
 #SBATCH --ntasks-per-node=1          # Crucial: 1 task per node for torchrun
@@ -11,7 +11,7 @@
 #SBATCH --error=logs/%x_%j.err
 
 set -euo pipefail
-export EXPERIMENT_NAME="ra_training"
+export EXPERIMENT_NAME="ra_training_socae"
 # -----------------------------------------------------------------------------
 # Configuration & Defaults
 # -----------------------------------------------------------------------------

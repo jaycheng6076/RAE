@@ -28,7 +28,8 @@ def _instantiate_quantizer(
     Instantiate a quantizer from a config dict or return the module directly.
 
     Args:
-        config: Either a dict with 'target' and 'params' keys, an nn.Module instance, or None.
+        config: Either a dict with 'target' and 'params' keys (and optionally 'ckpt'),
+                an nn.Module instance, or None.
 
     Returns:
         Instantiated quantizer module or None.
@@ -39,7 +40,22 @@ def _instantiate_quantizer(
         return config
     if isinstance(config, dict) and "target" in config:
         quantizer_cls = _get_obj_from_str(config["target"])
-        return quantizer_cls(**config.get("params", {}))
+        quantizer = quantizer_cls(**config.get("params", {}))
+
+        # Load checkpoint if provided
+        ckpt_path = config.get("ckpt", None)
+        if ckpt_path is not None:
+            print(f"Loading pre-trained quantizer from {ckpt_path}")
+            state_dict = torch.load(ckpt_path, map_location="cpu")
+            # Handle different checkpoint formats (ema, model, or raw state_dict)
+            if "ema" in state_dict:
+                state_dict = state_dict["ema"]
+            elif "model" in state_dict:
+                state_dict = state_dict["model"]
+            quantizer.load_state_dict(state_dict, strict=True)
+            print(f"Successfully loaded pre-trained quantizer from {ckpt_path}")
+
+        return quantizer
     raise ValueError(
         f"Invalid quantizer config: expected dict with 'target' key or nn.Module, got {type(config)}"
     )
