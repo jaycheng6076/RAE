@@ -101,6 +101,8 @@ class RAE(nn.Module):
         pretrained_decoder_path: Optional[str] = None,
         # ---- quantizer configs ----
         quantizer: Quantizer = None,
+        freeze_quantizer_encoder: bool = True,  # Freeze SOCAE encoder (sparsification)
+        freeze_quantizer_decoder: bool = True,  # Freeze SOCAE decoder (reconstruction)
         # ---- noising, reshaping and normalization-----
         noise_tau: float = 0.8,
         reshape_to_2d: bool = True,
@@ -156,6 +158,48 @@ class RAE(nn.Module):
             self.do_normalization = False
 
         self.quantizer = _instantiate_quantizer(quantizer)
+
+        # Store freeze settings
+        self.freeze_quantizer_encoder = freeze_quantizer_encoder
+        self.freeze_quantizer_decoder = freeze_quantizer_decoder
+
+        # Apply freeze settings to quantizer components
+        if self.quantizer is not None:
+            self._apply_quantizer_freeze_settings()
+
+    def _apply_quantizer_freeze_settings(self) -> None:
+        """
+        Apply freeze settings to quantizer encoder and decoder components.
+
+        SOCAE structure:
+        - encoder: nn.Linear (input_dim -> hidden_dim) - applies sparsification
+        - decoder: nn.Linear (hidden_dim -> input_dim) - reconstructs from sparse
+        - bias: nn.Parameter - pre-encoding bias
+
+        When freeze_quantizer_encoder=True: encoder weights are frozen (no gradients)
+        When freeze_quantizer_decoder=False: decoder weights are trainable
+        """
+        if self.quantizer is None:
+            return
+
+        # Freeze/unfreeze encoder (sparsification pathway)
+        # This includes: quantizer.encoder, quantizer.bias (used before encoding)
+        if self.freeze_quantizer_encoder:
+            self.quantizer.encoder.requires_grad_(False)
+            self.quantizer.bias.requires_grad_(False)
+            print("Freezing SOCAE encoder (sparsification weights)")
+        else:
+            self.quantizer.encoder.requires_grad_(True)
+            self.quantizer.bias.requires_grad_(True)
+            print("SOCAE encoder is trainable")
+
+        # Freeze/unfreeze decoder (reconstruction pathway)
+        if self.freeze_quantizer_decoder:
+            self.quantizer.decoder.requires_grad_(False)
+            print("Freezing SOCAE decoder (reconstruction weights)")
+        else:
+            self.quantizer.decoder.requires_grad_(True)
+            print("SOCAE decoder is trainable")
 
     def noising(self, x: torch.Tensor) -> torch.Tensor:
         noise_sigma = self.noise_tau * torch.rand(
