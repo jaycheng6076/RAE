@@ -19,7 +19,7 @@ stage_1:
         topk: 32  # number of top activations to keep
         larger_topk: 128  # required param, must match pre-trained model
         encoder_bias: false  # must match pre-trained model architecture
-      ckpt: results/socae/checkpoints/ep-last.pt  # pre-trained SOCAE checkpoint
+      ckpt: results/socae/socae/checkpoints/ep-last.pt # pre-trained SOCAE checkpoint
   #ckpt: results/stage1/rae/checkpoints/ep-last.pt
 
 eval:
