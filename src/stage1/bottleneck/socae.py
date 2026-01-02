@@ -6,6 +6,7 @@ import numpy as np
 
 import torch
 import torch.nn.functional as F
+from geom_median.torch import compute_geometric_median
 from torch import nn, Tensor
 
 logger: logging.Logger = logging.getLogger(__name__)
