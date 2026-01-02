@@ -1,5 +1,5 @@
 stage_1:
-  target: stage1.RAE
+  target: stage1.rae_s.RAE
   params:
     encoder_cls: 'Dinov2withNorm'
     encoder_config_path: 'facebook/dinov2-with-registers-base'
@@ -17,6 +17,7 @@ stage_1:
         input_dim: 768  # DINOv2-Base hidden size
         hidden_dim: 12288  # 16x expansion for sparse latent (768 * 16)
         topk: 32  # number of top activations to keep
+        larger_topk: 128  # required param, must match pre-trained model
         encoder_bias: false  # must match pre-trained model architecture
       ckpt: results/socae/checkpoints/ep-last.pt  # pre-trained SOCAE checkpoint
   #ckpt: results/stage1/rae/checkpoints/ep-last.pt
