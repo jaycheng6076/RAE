@@ -30,7 +30,7 @@ eval:
   metrics: ['psnr', 'ssim', 'rfid'] # metrics to calculate
 
 training:
-  epochs: 16
+  epochs: 50
   ema_decay: 0.9978
   global_batch_size: 512
   num_workers: 8
