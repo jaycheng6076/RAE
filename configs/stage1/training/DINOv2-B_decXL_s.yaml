@@ -11,6 +11,8 @@ stage_1:
     noise_tau: 0.8 # training 0.8, at inference time always set to 0
     reshape_to_2d: true
     #normalization_stat_path: 'models/stats/dinov2/wReg_base/imagenet1k/stat.pt'
+    freeze_quantizer_encoder: true
+    freeze_quantizer_decoder: false
     quantizer:
       target: stage1.bottleneck.socae.SparseOrthogonalContrastiveAutoEncoder
       params:

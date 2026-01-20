@@ -27,19 +27,19 @@ socae:
     ncl_with_larger_k: false  # Use z_k for NCL loss (not z_large_k)
     track_dead_neuron_pre_relu: true
     activation_history_size: 1000
-    encoder_bias: false
+    encoder_bias: true  # Aligned with reference default
     z_dead_k_in_positives_for_ncl: false
 
-# Loss configuration
+# Loss configuration (aligned with reference naming)
 loss:
-  recon_k_weight: 1.0  # Main reconstruction loss weight
-  recon_large_k_weight: 0.1  # Less sparse reconstruction loss weight
-  recon_dead_k_weight: 0.1  # Dead neuron recovery loss weight
-  ncl_weight: 0.01  # Contrastive loss weight
-  orth_weight: 0.01  # Orthogonality regularization weight
+  # Reference uses weight=1.0 for recon_k implicitly (no config needed)
+  reconstruct_loss_large_k_discount: 0.125  # 1/8 - discount for large_k reconstruction
+  reconstruct_loss_dead_k_discount: 0.03125  # 1/32 - discount for dead_k reconstruction
+  ncl_loss_weight: 0.1  # NCL contrastive loss weight
+  ortho_loss_weight: 0.1  # Orthogonality regularization weight
   ncl_temperature: 0.2  # Temperature for contrastive loss
   ncl_sim_threshold: 0.8  # Similarity threshold for NCL
-  enable_orth_reg: true  # Enable orthogonality regularization
+  normalize_input: false  # Normalize input embedding to unit length
 
 # Training configuration
 training:
@@ -52,16 +52,19 @@ training:
   checkpoint_interval: 5  # Every 5 epochs
   global_seed: 42
   simulated_annealing: true  # Enable simulated annealing for topk
+  simulated_annealing_delay: 1000  # Delay before annealing starts (aligned with reference)
   init_from_data: true  # Initialize bias from data
   init_samples: 100000  # Number of samples for initialization
   optimizer:
-    lr: 1.0e-3
+    lr: 1.0e-4  # Aligned with reference default
     betas: [0.9, 0.999]
     weight_decay: 0.0
+    eps: 6.25e-10  # Aligned with reference
+    fused: true  # Aligned with reference
   scheduler:
     type: cosine
     warmup_epochs: 2
     decay_end_epoch: 50
-    base_lr: 1.0e-3
+    base_lr: 1.0e-4
     final_lr: 1.0e-5
     warmup_from_zero: true

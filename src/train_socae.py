@@ -15,7 +15,6 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from omegaconf import OmegaConf
-
 from stage1 import RAE
 from stage1.bottleneck.socae import (
     SparseContrastiveAutoEncoder,
@@ -28,7 +27,6 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
-
 from utils import wandb_utils
 from utils.model_utils import get_obj_from_str, instantiate_from_config
 from utils.train_utils import *
@@ -181,19 +179,23 @@ def main():
     )
     training_cfg = dict(training_cfg) if isinstance(training_cfg, dict) else {}
 
-    # Loss weights from config
+    # Loss weights from config (aligned with reference naming)
     loss_section = full_cfg.get("loss", {})
     loss_cfg = (
         OmegaConf.to_container(loss_section, resolve=True) if loss_section else {}
     )
-    recon_k_weight = float(loss_cfg.get("recon_k_weight", 1.0))
-    recon_large_k_weight = float(loss_cfg.get("recon_large_k_weight", 0.1))
-    recon_dead_k_weight = float(loss_cfg.get("recon_dead_k_weight", 0.1))
-    ncl_weight = float(loss_cfg.get("ncl_weight", 0.01))
-    orth_weight = float(loss_cfg.get("orth_weight", 0.01))
+    # Reference uses weight=1.0 for recon_k implicitly
+    reconstruct_loss_large_k_discount = float(
+        loss_cfg.get("reconstruct_loss_large_k_discount", 1.0 / 8.0)
+    )
+    reconstruct_loss_dead_k_discount = float(
+        loss_cfg.get("reconstruct_loss_dead_k_discount", 1.0 / 32.0)
+    )
+    ncl_loss_weight = float(loss_cfg.get("ncl_loss_weight", 0.1))
+    ortho_loss_weight = float(loss_cfg.get("ortho_loss_weight", 0.1))
     ncl_temperature = float(loss_cfg.get("ncl_temperature", 0.2))
     ncl_sim_threshold = float(loss_cfg.get("ncl_sim_threshold", 0.8))
-    enable_orth_reg = bool(loss_cfg.get("enable_orth_reg", True))
+    normalize_input = bool(loss_cfg.get("normalize_input", False))
 
     # Training hyperparameters
     batch_size = int(training_cfg.get("batch_size", 256))
@@ -218,6 +220,7 @@ def main():
     num_epochs = int(training_cfg.get("epochs", 100))
     default_seed = int(training_cfg.get("global_seed", 0))
     simulated_annealing = bool(training_cfg.get("simulated_annealing", False))
+    simulated_annealing_delay = int(training_cfg.get("simulated_annealing_delay", 1000))
     init_from_data = bool(training_cfg.get("init_from_data", True))
     init_samples = int(training_cfg.get("init_samples", 100000))
 
@@ -362,11 +365,13 @@ def main():
             f"SOCAE architecture: input_dim={socae.input_dim}, hidden_dim={socae.hidden_dim}, topk={socae.topk}"
         )
         logger.info(
-            f"Loss weights: recon_k={recon_k_weight}, recon_large_k={recon_large_k_weight}, "
-            f"recon_dead_k={recon_dead_k_weight}, ncl={ncl_weight}, orth={orth_weight}"
+            f"Loss weights: recon_large_k_discount={reconstruct_loss_large_k_discount}, "
+            f"recon_dead_k_discount={reconstruct_loss_dead_k_discount}, "
+            f"ncl_weight={ncl_loss_weight}, orth_weight={ortho_loss_weight}"
         )
         logger.info(
-            f"NCL temperature: {ncl_temperature}, NCL sim threshold: {ncl_sim_threshold}"
+            f"NCL temperature: {ncl_temperature}, NCL sim threshold: {ncl_sim_threshold}, "
+            f"normalize_input: {normalize_input}"
         )
         if clip_grad is not None:
             logger.info(f"Clipping gradients to max norm {clip_grad}.")
@@ -420,28 +425,32 @@ def main():
                     # Flatten for SOCAE: [B*N, C]
                     z_flat = z.reshape(-1, z.shape[-1])
 
+                    # Apply input normalization if enabled (aligned with reference)
+                    if normalize_input:
+                        z_flat = F.normalize(z_flat, p=2.0, dim=1)
+
                 # Forward through SOCAE (training mode returns all three representations)
                 z_k, z_large_k, z_dead_k = ddp_model(z_flat, is_training=True)
 
-                # Compute losses
+                # Compute losses (aligned with reference signature)
                 losses = socae.compute_loss(
                     z_flat,
                     z_k,
                     z_large_k,
                     z_dead_k,
-                    enable_orth_reg=enable_orth_reg,
                     ncl_temperature=ncl_temperature,
                     ncl_sim_threshold=ncl_sim_threshold,
                 )
 
-                # Weighted total loss
+                # Weighted total loss (aligned with reference using .sum())
                 total_loss = (
-                    recon_k_weight * losses["reconstruct_loss_k"]
-                    + recon_large_k_weight * losses["reconstruct_loss_large_k"]
-                    + recon_dead_k_weight * losses["reconstruct_loss_dead_k"]
-                    + ncl_weight * losses["ncl_loss"]
-                    + orth_weight
-                    * losses.get("orth_loss", torch.tensor(0.0, device=device))
+                    losses["reconstruct_loss_k"].sum()
+                    + losses["reconstruct_loss_large_k"].sum()
+                    * reconstruct_loss_large_k_discount
+                    + losses["reconstruct_loss_dead_k"].sum()
+                    * reconstruct_loss_dead_k_discount
+                    + losses["ncl_loss"].sum() * ncl_loss_weight
+                    + losses["orth_loss"].sum() * ortho_loss_weight
                 )
 
             # Backward
@@ -464,11 +473,8 @@ def main():
             # Update EMA
             update_ema(ema_model, ddp_model.module, ema_decay)
 
-            # Unit norm decoder weights
-            socae._unit_norm_decoder()
-
-            # Simulated annealing update
-            if simulated_annealing:
+            # Simulated annealing update (aligned with reference: delay start)
+            if simulated_annealing and global_step > simulated_annealing_delay:
                 dead_count = (
                     (socae.stats_last_nonzero > socae.dead_threshold).sum().item()
                 )
@@ -476,14 +482,15 @@ def main():
 
             # Track metrics
             epoch_metrics["total"] += total_loss.detach()
-            epoch_metrics["recon_k"] += losses["reconstruct_loss_k"].detach()
-            epoch_metrics["recon_large_k"] += losses[
-                "reconstruct_loss_large_k"
-            ].detach()
-            epoch_metrics["recon_dead_k"] += losses["reconstruct_loss_dead_k"].detach()
-            epoch_metrics["ncl"] += losses["ncl_loss"].detach()
-            if "orth_loss" in losses:
-                epoch_metrics["orth"] += losses["orth_loss"].detach()
+            epoch_metrics["recon_k"] += losses["reconstruct_loss_k"].sum().detach()
+            epoch_metrics["recon_large_k"] += (
+                losses["reconstruct_loss_large_k"].sum().detach()
+            )
+            epoch_metrics["recon_dead_k"] += (
+                losses["reconstruct_loss_dead_k"].sum().detach()
+            )
+            epoch_metrics["ncl"] += losses["ncl_loss"].sum().detach()
+            epoch_metrics["orth"] += losses["orth_loss"].sum().detach()
             num_batches += 1
 
             # Logging
@@ -493,22 +500,23 @@ def main():
                 )
                 stats = {
                     "loss/total": total_loss.detach().item(),
-                    "loss/recon_k": losses["reconstruct_loss_k"].detach().item(),
+                    "loss/recon_k": losses["reconstruct_loss_k"].sum().detach().item(),
                     "loss/recon_large_k": losses["reconstruct_loss_large_k"]
+                    .sum()
                     .detach()
                     .item(),
                     "loss/recon_dead_k": losses["reconstruct_loss_dead_k"]
+                    .sum()
                     .detach()
                     .item(),
-                    "loss/ncl": losses["ncl_loss"].detach().item(),
-                    "loss/best_ncl": losses["best_ncl_loss"].detach().item(),
+                    "loss/ncl": losses["ncl_loss"].sum().detach().item(),
+                    "loss/best_ncl": losses["best_ncl_loss"].sum().detach().item(),
+                    "loss/orth": losses["orth_loss"].sum().detach().item(),
                     "lr": optimizer.param_groups[0]["lr"],
                     "topk": socae.topk,
                     "dead_neurons": dead_neurons,
                     "dead_ratio": dead_neurons / socae.hidden_dim,
                 }
-                if "orth_loss" in losses:
-                    stats["loss/orth"] = losses["orth_loss"].detach().item()
 
                 logger.info(
                     f"[Epoch {epoch} | Step {global_step}] "
@@ -535,10 +543,9 @@ def main():
                 ).item(),
                 "epoch/loss_ncl": (epoch_metrics["ncl"] / num_batches).item(),
             }
-            if epoch_metrics["orth"].item() > 0:
-                epoch_stats["epoch/loss_orth"] = (
-                    epoch_metrics["orth"] / num_batches
-                ).item()
+            epoch_stats["epoch/loss_orth"] = (
+                epoch_metrics["orth"] / num_batches
+            ).item()
 
             logger.info(
                 f"[Epoch {epoch}] "

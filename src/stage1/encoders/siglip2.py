@@ -26,4 +26,5 @@ class SigLIP2wNorm(nn.Module):
         """
         outputs = self.model(images, output_hidden_states=True, interpolate_pos_encoding = True)
         image_features = outputs.last_hidden_state
+        #cls_feature = outputs.pooler_output
         return image_features
