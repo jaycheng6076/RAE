@@ -1,0 +1,72 @@
+# SOCAE training on DINOv2 Register Tokens
+# This config trains SOCAE on the 4 register tokens from DINOv2-Base with registers.
+#
+# DINOv2 with registers outputs:
+# - Position 0: CLS token
+# - Positions 1-4: Register tokens (4 tokens) <- We train on these
+# - Positions 5+: Patch tokens
+#
+# Register tokens capture global image information in a compact form (4 tokens vs 256 patch tokens).
+
+# Encoder configuration (frozen, extracts only register tokens)
+encoder:
+  params:
+    dinov2_path: 'facebook/dinov2-with-registers-base'
+    normalize: true
+    include_cls: false  # Set to true to include CLS token (5 tokens total)
+
+# SOCAE bottleneck configuration
+socae:
+  target: stage1.bottleneck.socae.SparseOrthogonalContrastiveAutoEncoder
+  params:
+    input_dim: 768  # DINOv2-Base hidden size
+    hidden_dim: 12288  # 16x expansion (768 * 16)
+    topk: 32  # Number of top activations to keep
+    larger_topk: 128  # Less sparse for better reconstruction
+    dead_topk: null  # Auto-calculate
+    dead_threshold: 64  # Batches without activation to consider neuron dead
+    ncl_with_larger_k: false
+    track_dead_neuron_pre_relu: true
+    activation_history_size: 1000
+    encoder_bias: true
+    z_dead_k_in_positives_for_ncl: false
+
+# Loss configuration (aligned with reference)
+loss:
+  reconstruct_loss_large_k_discount: 0.125  # 1/8
+  reconstruct_loss_dead_k_discount: 0.03125  # 1/32
+  ncl_loss_weight: 0.1
+  ortho_loss_weight: 0.1
+  ncl_temperature: 0.2
+  ncl_sim_threshold: 0.8
+  normalize_input: false
+
+# Training configuration
+training:
+  epochs: 100
+  ema_decay: 0.9999
+  # With 4 tokens per image, we can use larger image batch sizes
+  # Effective token batch = global_batch_size * 4
+  global_batch_size: 4096  # -> 16384 tokens per global batch
+  num_workers: 8
+  clip_grad: 1.0
+  log_interval: 100
+  checkpoint_interval: 5
+  global_seed: 42
+  simulated_annealing: true
+  simulated_annealing_delay: 1000
+  init_from_data: true
+  init_samples: 100000
+  optimizer:
+    lr: 1.0e-4
+    betas: [0.9, 0.999]
+    weight_decay: 0.0
+    eps: 6.25e-10
+    fused: true
+  scheduler:
+    type: cosine
+    warmup_epochs: 5
+    decay_end_epoch: 100
+    base_lr: 1.0e-4
+    final_lr: 1.0e-6
+    warmup_from_zero: true

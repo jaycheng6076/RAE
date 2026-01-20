@@ -1,6 +1,19 @@
 # Copyright (c) Meta Platforms.
 # Licensed under the MIT license.
 
+"""
+Train SOCAE on DINOv2 register tokens (4 tokens per image).
+
+This script trains a Sparse Orthogonal Contrastive AutoEncoder on the 4 register
+tokens from DINOv2 with registers. Unlike patch tokens (256 tokens for 224x224),
+register tokens are a compact representation that captures global image information.
+
+Usage:
+    torchrun --nproc_per_node=8 src/train_socae_registers.py \
+        --config configs/socae/training/DINOv2-B_socae_registers.yaml \
+        --data-path /path/to/imagenet
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -15,11 +28,8 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from omegaconf import OmegaConf
-from stage1 import RAE
-from stage1.bottleneck.socae import (
-    SparseContrastiveAutoEncoder,
-    SparseOrthogonalContrastiveAutoEncoder,
-)
+from stage1.bottleneck.socae import SparseOrthogonalContrastiveAutoEncoder
+from stage1.encoders.dinov2 import Dinov2RegisterTokens
 from torch.cuda.amp import autocast, GradScaler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim.lr_scheduler import LambdaLR
@@ -28,7 +38,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
 from utils import wandb_utils
-from utils.model_utils import get_obj_from_str, instantiate_from_config
+from utils.model_utils import get_obj_from_str
 from utils.train_utils import *
 from utils.optim_utils import *
 from utils.resume_utils import *
@@ -38,7 +48,7 @@ from utils.dist_utils import *
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train SOCAE bottleneck on frozen encoder outputs."
+        description="Train SOCAE on DINOv2 register tokens."
     )
     parser.add_argument(
         "--config",
@@ -61,13 +71,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--image-size",
         type=int,
-        default=256,
-        help="Image resolution (assumes square images).",
+        default=224,
+        help="Image resolution (DINOv2 default is 224).",
     )
     parser.add_argument(
         "--precision",
         choices=["fp32", "fp16", "bf16"],
-        default="fp32",
+        default="bf16",
     )
     parser.add_argument(
         "--global-seed",
@@ -125,12 +135,15 @@ def load_checkpoint(
     return checkpoint.get("epoch", 0), checkpoint.get("step", 0)
 
 
-def build_encoder(encoder_config: dict, device: torch.device) -> RAE:
-    """Build and freeze the encoder from RAE config."""
-    rae: RAE = instantiate_from_config(encoder_config).to(device)
-    rae.encoder.eval()
-    rae.encoder.requires_grad_(False)
-    return rae
+def build_register_encoder(
+    encoder_config: dict, device: torch.device
+) -> Dinov2RegisterTokens:
+    """Build and freeze the DINOv2 register token encoder."""
+    params = encoder_config.get("params", {})
+    encoder = Dinov2RegisterTokens(**params).to(device)
+    encoder.eval()
+    encoder.requires_grad_(False)
+    return encoder
 
 
 def build_socae(
@@ -154,11 +167,11 @@ def main():
     # Config init
     full_cfg = OmegaConf.load(args.config)
 
-    # Get encoder config (for extracting latents)
+    # Get encoder config (for extracting register tokens)
     encoder_section = full_cfg.get("encoder", None)
     if encoder_section is None:
         raise ValueError(
-            "Config must define an 'encoder' section for extracting latents."
+            "Config must define an 'encoder' section for extracting register tokens."
         )
     encoder_config = OmegaConf.to_container(encoder_section, resolve=True)
 
@@ -184,7 +197,6 @@ def main():
     loss_cfg = (
         OmegaConf.to_container(loss_section, resolve=True) if loss_section else {}
     )
-    # Reference uses weight=1.0 for recon_k implicitly
     reconstruct_loss_large_k_discount = float(
         loss_cfg.get("reconstruct_loss_large_k_discount", 1.0 / 8.0)
     )
@@ -224,6 +236,12 @@ def main():
     init_from_data = bool(training_cfg.get("init_from_data", True))
     init_samples = int(training_cfg.get("init_samples", 100000))
 
+    # Register token specific config
+    include_cls = bool(encoder_config.get("params", {}).get("include_cls", False))
+    num_tokens_per_image = (
+        5 if include_cls else 4
+    )  # CLS + 4 registers or just 4 registers
+
     # Seed setup
     global_seed = args.global_seed if args.global_seed is not None else default_seed
     seed = global_seed * world_size + rank
@@ -236,11 +254,18 @@ def main():
     full_cfg.experiment_dir = experiment_dir
     full_cfg.checkpoint_dir = checkpoint_dir
 
-    # Build encoder (frozen)
-    encoder_rae = build_encoder(encoder_config, device)
+    # Build encoder (frozen) - specifically for register tokens
+    encoder = build_register_encoder(encoder_config, device)
     if args.compile:
-        encoder_rae.encode = torch.compile(encoder_rae.encode)
-    encoder_rae.eval()
+        encoder = torch.compile(encoder)
+    encoder.eval()
+
+    if rank == 0:
+        logger.info(f"DINOv2 Register Token Encoder loaded")
+        logger.info(f"  Hidden size: {encoder.hidden_size}")
+        logger.info(
+            f"  Tokens per image: {num_tokens_per_image} ({'CLS + registers' if include_cls else 'registers only'})"
+        )
 
     # Build SOCAE
     socae = build_socae(socae_config, device)
@@ -261,15 +286,16 @@ def main():
     # AMP setup
     scaler, autocast_kwargs = get_autocast_scaler(args)
 
-    # Data setup
-    first_crop_size = 384 if args.image_size == 256 else int(args.image_size * 1.5)
+    # Data setup - standard ImageNet transforms for DINOv2
     stage1_transform = transforms.Compose(
         [
-            transforms.Resize(
-                first_crop_size, interpolation=transforms.InterpolationMode.BICUBIC
-            ),
-            transforms.RandomCrop(args.image_size),
+            transforms.Resize(256, interpolation=transforms.InterpolationMode.BICUBIC),
+            transforms.CenterCrop(args.image_size),
             transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225],
+            ),
         ]
     )
     loader, sampler = prepare_dataloader(
@@ -322,7 +348,7 @@ def main():
 
     # Initialize SOCAE from data samples (for geometric median bias, etc.)
     if init_from_data and start_epoch == 0:
-        logger.info(f"Initializing SOCAE from {init_samples} data samples...")
+        logger.info(f"Initializing SOCAE from {init_samples} register token samples...")
         init_loader = DataLoader(
             loader.dataset,
             batch_size=min(batch_size, 512),
@@ -335,12 +361,10 @@ def main():
         with torch.no_grad():
             for images, _ in init_loader:
                 images = images.to(device, non_blocking=True)
-                z = encoder_rae.encode(images)
-                if encoder_rae.reshape_to_2d:
-                    b, c, h, w = z.shape
-                    z = z.view(b, c, h * w).transpose(1, 2).reshape(-1, c)
-                else:
-                    z = z.reshape(-1, z.shape[-1])
+                # Get register tokens [B, num_tokens, hidden_size]
+                register_tokens = encoder(images)
+                # Flatten to [B * num_tokens, hidden_size]
+                z = register_tokens.reshape(-1, register_tokens.shape[-1])
                 collected_samples.append(z.cpu())
                 if sum(s.shape[0] for s in collected_samples) >= init_samples:
                     break
@@ -348,11 +372,11 @@ def main():
         socae.init_from_data(all_samples, scale_mse=False, init_pre_bias=True)
         del collected_samples, all_samples
         torch.cuda.empty_cache()
-        logger.info("SOCAE initialization from data completed.")
+        logger.info("SOCAE initialization from register tokens completed.")
 
     # Simulated annealing setup
     if simulated_annealing and start_epoch == 0:
-        socae.simulated_annealing_init(batch_size)
+        socae.simulated_annealing_init(batch_size * num_tokens_per_image)
         logger.info(
             f"Simulated annealing initialized with starting k multiplier: {socae.starting_k_multipler}"
         )
@@ -373,13 +397,17 @@ def main():
             f"NCL temperature: {ncl_temperature}, NCL sim threshold: {ncl_sim_threshold}, "
             f"normalize_input: {normalize_input}"
         )
+        logger.info(
+            f"Training on {num_tokens_per_image} register tokens per image "
+            f"(effective batch: {batch_size * num_tokens_per_image} tokens/GPU)"
+        )
         if clip_grad is not None:
             logger.info(f"Clipping gradients to max norm {clip_grad}.")
         logger.info(optim_msg)
         if sched_msg:
             logger.info(sched_msg)
         logger.info(
-            f"Training for {num_epochs} epochs, batch size {batch_size} per GPU."
+            f"Training for {num_epochs} epochs, batch size {batch_size} images per GPU."
         )
         logger.info(
             f"Dataset contains {len(loader.dataset)} samples, {steps_per_epoch} steps per epoch."
@@ -416,23 +444,21 @@ def main():
             optimizer.zero_grad(set_to_none=True)
 
             with autocast(**autocast_kwargs):
-                # Get encoder outputs (frozen)
+                # Get register tokens (frozen encoder)
                 with torch.no_grad():
-                    z = encoder_rae.encode(images)
-                    if encoder_rae.reshape_to_2d:
-                        b, c, h, w = z.shape
-                        z = z.view(b, c, h * w).transpose(1, 2)  # [B, N, C]
-                    # Flatten for SOCAE: [B*N, C]
-                    z_flat = z.reshape(-1, z.shape[-1])
+                    # [B, num_tokens, hidden_size]
+                    register_tokens = encoder(images)
+                    # Flatten for SOCAE: [B * num_tokens, hidden_size]
+                    z_flat = register_tokens.reshape(-1, register_tokens.shape[-1])
 
-                    # Apply input normalization if enabled (aligned with reference)
+                    # Apply input normalization if enabled
                     if normalize_input:
                         z_flat = F.normalize(z_flat, p=2.0, dim=1)
 
-                # Forward through SOCAE (training mode returns all three representations)
+                # Forward through SOCAE
                 z_k, z_large_k, z_dead_k = ddp_model(z_flat, is_training=True)
 
-                # Compute losses (aligned with reference signature)
+                # Compute losses
                 losses = socae.compute_loss(
                     z_flat,
                     z_k,
@@ -542,10 +568,8 @@ def main():
                     epoch_metrics["recon_dead_k"] / num_batches
                 ).item(),
                 "epoch/loss_ncl": (epoch_metrics["ncl"] / num_batches).item(),
+                "epoch/loss_orth": (epoch_metrics["orth"] / num_batches).item(),
             }
-            epoch_stats["epoch/loss_orth"] = (
-                epoch_metrics["orth"] / num_batches
-            ).item()
 
             logger.info(
                 f"[Epoch {epoch}] "
@@ -557,7 +581,7 @@ def main():
     # Save final checkpoint
     if rank == 0:
         logger.info(f"Saving final checkpoint at epoch {num_epochs}...")
-        ckpt_path = f"{checkpoint_dir}/ep-last.pt"
+        ckpt_path = f"{checkpoint_dir}/ep-{num_epochs:07d}.pt"
         save_checkpoint(
             ckpt_path,
             global_step,
