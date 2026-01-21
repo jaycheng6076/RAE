@@ -92,7 +92,7 @@ def save_checkpoint(
     path: str,
     step: int,
     epoch: int,
-    model: DDP,
+    model: torch.nn.Module,
     ema_model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     scheduler: Optional[LambdaLR],
@@ -100,7 +100,7 @@ def save_checkpoint(
     state = {
         "step": step,
         "epoch": epoch,
-        "model": model.module.state_dict(),
+        "model": model.state_dict(),
         "ema": ema_model.state_dict(),
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict() if scheduler is not None else None,
@@ -111,13 +111,13 @@ def save_checkpoint(
 
 def load_checkpoint(
     path: str,
-    model: DDP,
+    model: torch.nn.Module,
     ema_model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     scheduler: Optional[LambdaLR],
 ) -> Tuple[int, int]:
     checkpoint = torch.load(path, map_location="cpu")
-    model.module.load_state_dict(checkpoint["model"])
+    model.load_state_dict(checkpoint["model"])
     ema_model.load_state_dict(checkpoint["ema"])
     optimizer.load_state_dict(checkpoint["optimizer"])
     if scheduler is not None and checkpoint.get("scheduler") is not None:
@@ -242,19 +242,11 @@ def main():
         encoder_rae.encode = torch.compile(encoder_rae.encode)
     encoder_rae.eval()
 
-    # Build SOCAE
+    # Build SOCAE (no DDP - small model, manual gradient sync)
+    # This avoids DDP issues with decoder weights being used multiple times in loss
     socae = build_socae(socae_config, device)
     ema_model = deepcopy(socae).to(device).eval()
     ema_model.requires_grad_(False)
-
-    ddp_model = DDP(
-        socae,
-        device_ids=[device.index],
-        broadcast_buffers=False,
-        find_unused_parameters=True,  # Required: pre_bias param not used in forward
-    )
-    ddp_model._set_static_graph()  # Required: decoder.weight used multiple times in loss computation
-    socae = ddp_model.module
 
     # Optimizer
     optimizer, optim_msg = build_optimizer(socae.parameters(), training_cfg)
@@ -306,7 +298,7 @@ def main():
         if ckpt_path.is_file():
             start_epoch, global_step = load_checkpoint(
                 ckpt_path,
-                ddp_model,
+                socae,
                 ema_model,
                 optimizer,
                 scheduler,
@@ -360,7 +352,7 @@ def main():
 
     # Logging
     if rank == 0:
-        num_params = sum(p.numel() for p in ddp_model.parameters() if p.requires_grad)
+        num_params = sum(p.numel() for p in socae.parameters() if p.requires_grad)
         logger.info(f"SOCAE trainable parameters: {num_params/1e6:.2f}M")
         logger.info(
             f"SOCAE architecture: input_dim={socae.input_dim}, hidden_dim={socae.hidden_dim}, topk={socae.topk}"
@@ -390,7 +382,7 @@ def main():
 
     # Training loop
     for epoch in range(start_epoch, num_epochs):
-        ddp_model.train()
+        socae.train()
         sampler.set_epoch(epoch)
         epoch_metrics: Dict[str, torch.Tensor] = defaultdict(
             lambda: torch.zeros(1, device=device)
@@ -405,7 +397,7 @@ def main():
                 ckpt_path,
                 global_step,
                 epoch,
-                ddp_model,
+                socae,
                 ema_model,
                 optimizer,
                 scheduler,
@@ -431,7 +423,7 @@ def main():
                         z_flat = F.normalize(z_flat, p=2.0, dim=1)
 
                 # Forward through SOCAE (training mode returns all three representations)
-                z_k, z_large_k, z_dead_k = ddp_model(z_flat, is_training=True)
+                z_k, z_large_k, z_dead_k = socae(z_flat, is_training=True)
 
                 # Compute losses (aligned with reference signature)
                 losses = socae.compute_loss(
@@ -455,24 +447,33 @@ def main():
                 )
 
             # Backward
+            # Backward
             if scaler:
                 scaler.scale(total_loss).backward()
+                # Sync gradients across workers (no DDP, manual sync)
+                for param in socae.parameters():
+                    if param.grad is not None:
+                        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
                 if clip_grad is not None:
                     scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(ddp_model.parameters(), clip_grad)
+                    torch.nn.utils.clip_grad_norm_(socae.parameters(), clip_grad)
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 total_loss.backward()
+                # Sync gradients across workers (no DDP, manual sync)
+                for param in socae.parameters():
+                    if param.grad is not None:
+                        dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
                 if clip_grad is not None:
-                    torch.nn.utils.clip_grad_norm_(ddp_model.parameters(), clip_grad)
+                    torch.nn.utils.clip_grad_norm_(socae.parameters(), clip_grad)
                 optimizer.step()
 
             if scheduler is not None:
                 scheduler.step()
 
             # Update EMA
-            update_ema(ema_model, ddp_model.module, ema_decay)
+            update_ema(ema_model, socae, ema_decay)
 
             # Simulated annealing update (aligned with reference: delay start)
             if simulated_annealing and global_step > simulated_annealing_delay:
@@ -563,7 +564,7 @@ def main():
             ckpt_path,
             global_step,
             num_epochs,
-            ddp_model,
+            socae,
             ema_model,
             optimizer,
             scheduler,

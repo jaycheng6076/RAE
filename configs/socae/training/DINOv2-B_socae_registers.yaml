@@ -20,7 +20,7 @@ socae:
   target: stage1.bottleneck.socae.SparseOrthogonalContrastiveAutoEncoder
   params:
     input_dim: 768  # DINOv2-Base hidden size
-    hidden_dim: 12288  # 16x expansion (768 * 16)
+    hidden_dim: 16384  # 16x expansion (768 * 16)
     topk: 32  # Number of top activations to keep
     larger_topk: 128  # Less sparse for better reconstruction
     dead_topk: null  # Auto-calculate
