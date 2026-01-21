@@ -278,6 +278,7 @@ def main():
         broadcast_buffers=False,
         find_unused_parameters=True,  # Required: pre_bias param not used in forward
     )
+    ddp_model._set_static_graph()  # Required: decoder.weight used multiple times in loss computation
     socae = ddp_model.module
 
     # Optimizer
